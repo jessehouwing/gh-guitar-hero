@@ -206,7 +206,7 @@ func newModel() model {
 	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx, speedIdx: defaultSpeedIdx}
 
 	out, err := exec.Command("git", "log",
-		"--graph", "--oneline", "--all", "--no-color",
+		"--graph", "--oneline", "--no-color",
 		fmt.Sprintf("--max-count=%d", maxCommits),
 	).Output()
 	if err != nil {
