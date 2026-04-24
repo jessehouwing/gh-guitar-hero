@@ -236,17 +236,74 @@ func parseLines(raw string) []gLine {
 	return gl
 }
 
-// addPaddingLines inserts one empty "|" line after each commit line, adding
-// visual breathing room between commits so they don't rush past the hit-zone.
+// addPaddingLines inserts one branch-aware padding line after each commit line,
+// adding visual breathing room between commits so they don't rush past the
+// hit-zone. The padding line reflects all active branches at that point in the
+// graph, not just the main-branch "|".
 func addPaddingLines(lines []gLine) []gLine {
 	result := make([]gLine, 0, len(lines)*2)
-	for _, l := range lines {
+	for i, l := range lines {
 		result = append(result, l)
 		if l.commit {
-			result = append(result, gLine{text: "|", commit: false, lane: -1})
+			padText := derivePaddingText(lines, i)
+			result = append(result, gLine{text: padText, commit: false, lane: -1})
 		}
 	}
 	return result
+}
+
+// derivePaddingText returns a "branches only" text line for the padding row
+// inserted after the commit at commitIdx. It combines information from the
+// commit line itself (branches to the left of "*") and the immediately
+// following line (which may reveal additional branches via "\" or "/").
+func derivePaddingText(lines []gLine, commitIdx int) string {
+	a := []rune(lines[commitIdx].text)
+	// +2 so a trailing '\' can write one column past the end of the source text.
+	n := len(a) + 2
+	if commitIdx+1 < len(lines) {
+		if m := len([]rune(lines[commitIdx+1].text)) + 2; m > n {
+			n = m
+		}
+	}
+
+	out := make([]rune, n)
+	for j := range out {
+		out[j] = ' '
+	}
+
+	applyBranchRunes(a, out)
+	if commitIdx+1 < len(lines) {
+		applyBranchRunes([]rune(lines[commitIdx+1].text), out)
+	}
+
+	result := strings.TrimRight(string(out), " ")
+	if result == "" {
+		return "|"
+	}
+	return result
+}
+
+// applyBranchRunes marks active branch positions in out from the given rune slice.
+// Rules: '|' and '*' → '|' at that column; '\' → '|' one column to the right;
+// '/' → '|' one column to the left. All other characters are ignored.
+func applyBranchRunes(runes []rune, out []rune) {
+	for i, r := range runes {
+		if i >= len(out) {
+			break // out is shorter than runes; no further columns can be written
+		}
+		switch r {
+		case '|', '*':
+			out[i] = '|'
+		case '\\':
+			if i+1 < len(out) {
+				out[i+1] = '|'
+			}
+		case '/':
+			if i > 0 {
+				out[i-1] = '|'
+			}
+		}
+	}
 }
 
 // buildNotes scans commit lines and groups consecutive same-lane commits into
@@ -964,10 +1021,18 @@ func renderGraphLine(
 			continue
 		}
 
-		// Graph decoration characters
+		// Graph decoration characters.
+		// '\' and '/' are swapped on render because the game scrolls commits
+		// newest-first toward the hit-zone (bottom), which is the reverse of the
+		// git-log order. Swapping restores the conventional top-to-bottom
+		// branch appearance (branches open with '\' going right and close with '/').
 		switch ch {
-		case '|', '\\', '/':
-			sb.WriteString(styleLane[lane].Render(string(ch)))
+		case '|':
+			sb.WriteString(styleLane[lane].Render("|"))
+		case '\\':
+			sb.WriteString(styleLane[lane].Render("/"))
+		case '/':
+			sb.WriteString(styleLane[lane].Render("\\"))
 		case '_':
 			sb.WriteString(styleLane[lane].Render("_"))
 		case ' ':
