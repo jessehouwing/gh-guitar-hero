@@ -189,8 +189,9 @@ type model struct {
 	tick  int
 	sTick int // sub-tick counter for scrolling
 
-	held      [numLanes]bool
-	lastPress [numLanes]time.Time
+	held          [numLanes]bool
+	lastPress     [numLanes]time.Time
+	lastPressTick [numLanes]int // tick when the lane key was most recently pressed
 
 	sparks []spark
 
@@ -306,7 +307,10 @@ func applyBranchRunes(runes []rune, out []rune) {
 			break // out is shorter than runes; no further columns can be written
 		}
 		switch r {
-		case '|', '*':
+		case '*':
+			out[i] = '|'
+			return // everything after '*' is SHA + message — not graph decoration
+		case '|':
 			out[i] = '|'
 		case '\\':
 			if i+1 < len(out) {
@@ -770,9 +774,8 @@ func (m model) viewMenu() string {
 
 	laneList := ""
 	for i := 0; i < numLanes; i++ {
-		laneList += fmt.Sprintf("    Lane %d (%s) → press  %s\n",
+		laneList += fmt.Sprintf("    Lane %d → press  %s\n",
 			i+1,
-			styleLaneB[i].Render(strings.ToLower(laneHex[i][:7])),
 			styleLaneB[i].Render(laneLabels[i]),
 		)
 	}
