@@ -299,8 +299,11 @@ func derivePaddingText(lines []gLine, commitIdx int) string {
 }
 
 // applyBranchRunes marks active branch positions in out from the given rune slice.
-// Rules: '|' and '*' → '|' at that column; '\' → '|' one column to the right;
-// '/' → '|' one column to the left. All other characters are ignored.
+// Rules: '*' and '|' → '|' at that column; '\' → '|' one column to the right;
+// '/' → '|' one column to the left. Spaces and '_' are skipped. Any other
+// character (e.g. the start of a SHA or commit message) ends processing
+// immediately so that '/' or '\' inside a commit message (e.g. "user/repo")
+// are never mistaken for branch decoration.
 func applyBranchRunes(runes []rune, out []rune) {
 	for i, r := range runes {
 		if i >= len(out) {
@@ -309,7 +312,8 @@ func applyBranchRunes(runes []rune, out []rune) {
 		switch r {
 		case '*':
 			out[i] = '|'
-			return // everything after '*' is SHA + message — not graph decoration
+			// Do NOT return: graph chars like '|' can still appear after '*'
+			// on a commit line (e.g. "* |   abc1234 msg" has a live branch at col 2).
 		case '|':
 			out[i] = '|'
 		case '\\':
@@ -320,6 +324,13 @@ func applyBranchRunes(runes []rune, out []rune) {
 			if i > 0 {
 				out[i-1] = '|'
 			}
+		case ' ', '_':
+			// graph spacing / horizontal connector — ignored
+		default:
+			// First non-graph character signals the start of commit content
+			// (SHA + message). Stop here to avoid treating message text as
+			// branch decoration.
+			return
 		}
 	}
 }
