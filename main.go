@@ -39,19 +39,35 @@ const (
 // ─── difficulty ───────────────────────────────────────────────────────────────
 
 type difficultyProfile struct {
-	label       string
-	scrollEvery int // ticks between line advances
-	holdMinRun  int // consecutive same-lane commits needed to form a hold note
+	label      string
+	holdMinRun int // consecutive same-lane commits needed to form a hold note
 }
 
 var difficulties = []difficultyProfile{
-	{"Easy",   6, 2}, // slow scroll; pairs of same-lane commits become holds
-	{"Normal", 3, 3}, // moderate; triplets become holds
-	{"Hard",   2, 4}, // fast; need 4 same-lane commits for a hold
-	{"Expert", 1, 5}, // very fast; need 5 same-lane commits for a hold
+	{"Easy",   2}, // pairs of same-lane commits become holds
+	{"Normal", 3}, // triplets become holds
+	{"Hard",   4}, // need 4 same-lane commits for a hold
+	{"Expert", 5}, // need 5 same-lane commits for a hold
 }
 
 const defaultDiffIdx = 1 // Normal
+
+// ─── speed ────────────────────────────────────────────────────────────────────
+
+type speedProfile struct {
+	label       string
+	scrollEvery int // ticks between line advances
+}
+
+var speeds = []speedProfile{
+	{"Slowest", 10}, // very relaxed scroll
+	{"Slow",     6}, // gentle scroll
+	{"Normal",   3}, // moderate scroll
+	{"Fast",     2}, // quick scroll
+	{"Fastest",  1}, // very fast scroll
+}
+
+const defaultSpeedIdx = 2 // Normal
 
 // ─── lane colours & labels ────────────────────────────────────────────────────
 
@@ -153,7 +169,8 @@ type model struct {
 	scrollPos int // index of gLines shown at row 0
 
 	diffIdx     int // index into difficulties slice
-	scrollEvery int // ticks between line advances (set from difficulty on start)
+	speedIdx    int // index into speeds slice
+	scrollEvery int // ticks between line advances (set from speed on start)
 
 	tick  int
 	sTick int // sub-tick counter for scrolling
@@ -176,7 +193,7 @@ type model struct {
 // ─── git parsing ──────────────────────────────────────────────────────────────
 
 func newModel() model {
-	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx}
+	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx, speedIdx: defaultSpeedIdx}
 
 	out, err := exec.Command("git", "log",
 		"--graph", "--oneline", "--all", "--no-color",
@@ -191,7 +208,7 @@ func newModel() model {
 		return m
 	}
 
-	m.lines = parseLines(string(out))
+	m.lines = addPaddingLines(parseLines(string(out)))
 	m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
 	m.total = len(m.notes)
 	return m
@@ -217,6 +234,19 @@ func parseLines(raw string) []gLine {
 		gl = append(gl, l)
 	}
 	return gl
+}
+
+// addPaddingLines inserts one empty "|" line after each commit line, adding
+// visual breathing room between commits so they don't rush past the hit-zone.
+func addPaddingLines(lines []gLine) []gLine {
+	result := make([]gLine, 0, len(lines)*2)
+	for _, l := range lines {
+		result = append(result, l)
+		if l.commit {
+			result = append(result, gLine{text: "|", commit: false, lane: -1})
+		}
+	}
+	return result
 }
 
 // buildNotes scans commit lines and groups consecutive same-lane commits into
@@ -374,6 +404,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
 				m.total = len(m.notes)
 			}
+		case "up", "k":
+			if m.speedIdx > 0 {
+				m.speedIdx--
+			}
+		case "down", "j":
+			if m.speedIdx < len(speeds)-1 {
+				m.speedIdx++
+			}
 		case "enter", " ":
 			if m.errMsg == "" {
 				m.ph = phPlay
@@ -381,9 +419,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.hitRow < 3 {
 					m.hitRow = 3
 				}
-				// Start from an empty screen so the player can see notes scrolling in.
-				m.scrollPos = -m.hitRow
-				m.scrollEvery = difficulties[m.diffIdx].scrollEvery
+				// Notes fall from the top; scrollPos=0 puts the latest commit at row 0.
+				m.scrollPos = 0
+				m.scrollEvery = speeds[m.speedIdx].scrollEvery
 				m.tick = 0
 				m.sTick = 0
 				// Rebuild notes with the holdMinRun for the chosen difficulty.
@@ -420,6 +458,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m2.w, m2.h = m.w, m.h
 			m2.hitRow = m.hitRow
 			m2.diffIdx = m.diffIdx
+			m2.speedIdx = m.speedIdx
 			// Rebuild notes for the previously chosen difficulty.
 			m2.notes = buildNotes(m2.lines, difficulties[m2.diffIdx].holdMinRun)
 			m2.total = len(m2.notes)
@@ -434,7 +473,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // tryHit checks whether the pressed lane corresponds to an active note.
 func (m model) tryHit(lane int) model {
-	hitLine := m.scrollPos + m.hitRow
+	hitLine := m.scrollPos - m.hitRow
 	for i := m.notePtr; i < len(m.notes); i++ {
 		n := &m.notes[i]
 		if n.state != nsActive {
@@ -474,9 +513,18 @@ func (m *model) spawnFireworks(lane int) {
 	laneW := m.w / numLanes
 	cx := float64(lane*laneW + laneW/2)
 	cy := float64(m.hitRow)
-	for k := 0; k < 24; k++ {
+
+	// Scale particle count and speed with current streak.
+	// Base: 24 particles. Add 12 more for every 5 streak, up to 72 total.
+	count := 24 + clamp(m.streak/5, 0, 4)*12
+	spdScale := 1.0 + float64(m.streak)/25.0
+	if spdScale > 2.5 {
+		spdScale = 2.5
+	}
+
+	for k := 0; k < count; k++ {
 		angle := rand.Float64() * 2 * math.Pi
-		spd := 0.5 + rand.Float64()*2.5
+		spd := (0.5 + rand.Float64()*2.5) * spdScale
 		m.sparks = append(m.sparks, spark{
 			x: cx, y: cy,
 			vx:    math.Cos(angle) * spd,
@@ -510,7 +558,7 @@ func (m model) handleTick() (tea.Model, tea.Cmd) {
 		m.scrollPos++
 	}
 
-	hitLine := m.scrollPos + m.hitRow
+	hitLine := m.scrollPos - m.hitRow
 
 	// Update note states
 	for i := range m.notes {
@@ -554,20 +602,17 @@ func (m model) handleTick() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Check end condition
-	if m.scrollPos >= len(m.lines)+m.hitRow {
+	// Check end condition: wait until all notes are resolved AND the commit
+	// history has completely scrolled off screen.
+	allDone := true
+	for _, n := range m.notes {
+		if n.state == nsUpcoming || n.state == nsActive {
+			allDone = false
+			break
+		}
+	}
+	if allDone && m.scrollPos >= len(m.lines)+m.hitRow {
 		m.ph = phOver
-	} else {
-		allDone := true
-		for _, n := range m.notes {
-			if n.state == nsUpcoming || n.state == nsActive {
-				allDone = false
-				break
-			}
-		}
-		if allDone && m.scrollPos > len(m.lines)-m.h {
-			m.ph = phOver
-		}
 	}
 
 	// Advance spark particles
@@ -625,13 +670,23 @@ func (m model) viewMenu() string {
 		}
 	}
 
+	// Build speed selector display
+	speedSelector := "  "
+	for i, s := range speeds {
+		if i == m.speedIdx {
+			speedSelector += styleLaneB[3].Render("[ " + s.label + " ]")
+		} else {
+			speedSelector += styleDim.Render("  " + s.label + "  ")
+		}
+	}
+
 	return fmt.Sprintf(`
 %s
 
   Loaded %d commits  (%d playable notes)
 
   HOW TO PLAY  ─────────────────────────────────────────────────
-  The git commit graph scrolls upward.
+  The git commit graph scrolls downward.
   When a commit (●) reaches the ══ hit-zone line, press the
   matching key for its column:
 
@@ -644,6 +699,7 @@ func (m model) viewMenu() string {
   ─────────────────────────────────────────────────────────────
 
   DIFFICULTY:  ← %s →    (← → to change)
+  SPEED:       ↑ %s ↓    (↑ ↓ to change)
 
   ENTER / SPACE = Start    Q = Quit
 
@@ -652,6 +708,7 @@ func (m model) viewMenu() string {
 		m.total, m.total,
 		laneList,
 		diffSelector,
+		speedSelector,
 	)
 }
 
@@ -717,7 +774,7 @@ func (m model) viewGame() string {
 	// Build note-marker lookup: gLine index → noteMarker
 	markers := make(map[int]noteMarker)
 	for _, n := range m.notes {
-		row := n.lineIdx - m.scrollPos
+		row := m.scrollPos - n.lineIdx
 		if row < 0 || row >= m.h {
 			continue
 		}
@@ -733,7 +790,7 @@ func (m model) viewGame() string {
 		if (n.state == nsActive || n.state == nsHit) && n.isHold {
 			for k := 1; k < n.holdLines; k++ {
 				li := n.lineIdx + k
-				innerRow := li - m.scrollPos
+				innerRow := m.scrollPos - li
 				if innerRow >= 0 && innerRow < m.h {
 					if _, exists := markers[li]; !exists {
 						markers[li] = noteMarker{'┃', laneHex[n.lane]}
@@ -753,7 +810,7 @@ func (m model) viewGame() string {
 			continue
 		}
 
-		lineIdx := m.scrollPos + row
+		lineIdx := m.scrollPos - row
 
 		// Rows outside git history: only sparks
 		if lineIdx < 0 || lineIdx >= len(m.lines) {
