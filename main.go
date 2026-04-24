@@ -5,7 +5,7 @@ package main
 //
 // Usage:  gh guitar-hero
 //
-// Controls: A S D F G  — hit the note in that lane
+// Controls: A S D F G H J K L — hit the note in that lane
 //           Hold key   — for long runs on a single branch
 //           Q / Ctrl+C — quit at any time
 
@@ -26,14 +26,14 @@ import (
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const (
-	numLanes   = 5
+	numLanes   = 9
 	tickRate   = 50 * time.Millisecond  // 20 FPS
 	hitWindow  = 5                      // ±lines tolerance around the hit zone
 	holdGap    = 200 * time.Millisecond // key "held" if last press < this ago
 	holdMinRun = 3                      // default: consecutive same-lane commits → hold note
 	sparkLife  = 22                     // frames a firework particle lives
 	maxCommits = 300                    // cap on git history depth
-	minH, minW = 14, 50                // minimum terminal size
+	minH, minW = 14, 72                // minimum terminal size (9 lanes need more width)
 )
 
 // ─── difficulty ───────────────────────────────────────────────────────────────
@@ -72,15 +72,19 @@ const defaultSpeedIdx = 2 // Normal
 // ─── lane colours & labels ────────────────────────────────────────────────────
 
 var laneHex = [numLanes]string{
-	"#FF6B6B", // red
-	"#6BCB77", // green
-	"#FFD93D", // yellow
-	"#4D96FF", // blue
-	"#C77DFF", // purple
+	"#FF6B6B", // red    – A
+	"#6BCB77", // green  – S
+	"#FFD93D", // yellow – D
+	"#4D96FF", // blue   – F
+	"#C77DFF", // purple – G
+	"#FF9F43", // orange – H
+	"#00D2FF", // cyan   – J
+	"#FF78C4", // pink   – K
+	"#A8FF3E", // lime   – L
 }
 
-var laneLabels = [numLanes]string{"A", "S", "D", "F", "G"}
-var laneRunes = [numLanes]rune{'a', 's', 'd', 'f', 'g'}
+var laneLabels = [numLanes]string{"A", "S", "D", "F", "G", "H", "J", "K", "L"}
+var laneRunes = [numLanes]rune{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'}
 
 // Pre-built cached styles (avoid allocating per frame)
 var (
