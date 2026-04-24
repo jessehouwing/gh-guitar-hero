@@ -92,12 +92,22 @@ var (
 			Foreground(lipgloss.Color("#FAFAFA")).
 			Background(lipgloss.Color("#7D56F4")).
 			Padding(0, 2)
+
+	// Hit-zone rendering styles. Background adapts to the terminal theme so
+	// the perfect-hit line is always visually distinct from the content rows.
+	hitZoneBg = lipgloss.AdaptiveColor{Dark: "#2D2D2D", Light: "#E0E0E0"}
+	// styleLaneBHz is styleLaneB with the hit-zone background applied.
+	styleLaneBHz [numLanes]lipgloss.Style
+	// hitZoneGutterStyle is used for the 1-column right-side gutter indicator.
+	hitZoneGutterStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Dark: "#666666", Light: "#999999"})
 )
 
 func init() {
 	for i := range laneHex {
 		styleLane[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(laneHex[i]))
 		styleLaneB[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(laneHex[i])).Bold(true)
+		styleLaneBHz[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(laneHex[i])).Bold(true).Background(hitZoneBg)
 	}
 }
 
@@ -832,18 +842,21 @@ func (m model) viewGame() string {
 	markers := make(map[int]noteMarker)
 	for _, n := range m.notes {
 		row := m.scrollPos - n.lineIdx
-		if row < 0 || row >= m.h {
-			continue
+		// Set the starting commit marker only when it is on screen.
+		if row >= 0 && row < m.h {
+			switch n.state {
+			case nsActive:
+				markers[n.lineIdx] = noteMarker{'●', laneHex[n.lane]}
+			case nsHit:
+				markers[n.lineIdx] = noteMarker{'✓', laneHex[n.lane]}
+			case nsMissed:
+				markers[n.lineIdx] = noteMarker{'✗', "#555555"}
+			}
 		}
-		switch n.state {
-		case nsActive:
-			markers[n.lineIdx] = noteMarker{'●', laneHex[n.lane]}
-		case nsHit:
-			markers[n.lineIdx] = noteMarker{'✓', laneHex[n.lane]}
-		case nsMissed:
-			markers[n.lineIdx] = noteMarker{'✗', "#555555"}
-		}
-		// For hold notes, also mark intermediate lines with a bar
+		// For hold notes mark every intermediate line with a thick bar.
+		// This is intentionally outside the on-screen check above so that
+		// the hold bars continue rendering correctly even after the starting
+		// commit has scrolled off the top of the screen.
 		if (n.state == nsActive || n.state == nsHit) && n.isHold {
 			for k := 1; k < n.holdLines; k++ {
 				li := n.lineIdx + k
@@ -860,9 +873,14 @@ func (m model) viewGame() string {
 	gameRows := m.hitRow + 1 // rows for git graph + hit zone line
 	var sb strings.Builder
 
+	// Reserve one column on the right as a hit-zone gutter indicator.
+	contentW := m.w - 1
+
 	for row := 0; row < gameRows; row++ {
 		if row == m.hitRow {
-			sb.WriteString(renderHitZone(m.w))
+			sb.WriteString(renderHitZone(contentW))
+			// Extend the hit-zone line into the gutter column.
+			sb.WriteString(styleLaneBHz[numLanes-1].Render("═"))
 			sb.WriteByte('\n')
 			continue
 		}
@@ -871,14 +889,20 @@ func (m model) viewGame() string {
 
 		// Rows outside git history: only sparks
 		if lineIdx < 0 || lineIdx >= len(m.lines) {
-			sb.WriteString(renderSparkRow(row, m.w, sparkAt))
-			sb.WriteByte('\n')
-			continue
+			sb.WriteString(renderSparkRow(row, contentW, sparkAt))
+		} else {
+			gl := m.lines[lineIdx]
+			mk, hasMk := markers[lineIdx]
+			sb.WriteString(renderGraphLine(gl, mk, hasMk, sparkAt, row, contentW))
 		}
 
-		gl := m.lines[lineIdx]
-		mk, hasMk := markers[lineIdx]
-		sb.WriteString(renderGraphLine(gl, mk, hasMk, sparkAt, row, m.w))
+		// Gutter column: show a │ indicator for rows inside the hit window.
+		// This lets players see the full hittable zone, not just the ═══ line.
+		if row >= m.hitRow-hitWindow && row < m.hitRow {
+			sb.WriteString(hitZoneGutterStyle.Render("│"))
+		} else {
+			sb.WriteByte(' ')
+		}
 		sb.WriteByte('\n')
 	}
 
@@ -898,7 +922,9 @@ func (m model) viewGame() string {
 	return sb.String()
 }
 
-// renderHitZone draws the coloured hit-zone separator line.
+// renderHitZone draws the hit-zone separator line using lane colours with an
+// adaptive background so the perfect-hit line stands out against any terminal
+// background colour.
 func renderHitZone(w int) string {
 	segW := w / numLanes
 	var sb strings.Builder
@@ -909,7 +935,7 @@ func renderHitZone(w int) string {
 			end = w
 		}
 		seg := strings.Repeat("═", end-start)
-		sb.WriteString(styleLaneB[i].Render(seg))
+		sb.WriteString(styleLaneBHz[i].Render(seg))
 	}
 	return sb.String()
 }
@@ -987,6 +1013,14 @@ func renderGraphLine(
 		}
 	}
 
+	// For non-commit lines (padding lines between hold-note commits), the hold
+	// marker should replace the '|' at the lane's column so the hold bar is
+	// drawn as a thick ┃ rather than a plain | through the whole run.
+	markerCol := -1
+	if hasMk && !gl.commit {
+		markerCol = color2lane(mk.color) * 2
+	}
+
 	col := 0
 	for ci, ch := range runes {
 		if col >= width {
@@ -1028,7 +1062,14 @@ func renderGraphLine(
 		// branch appearance (branches open with '\' going right and close with '/').
 		switch ch {
 		case '|':
-			sb.WriteString(styleLane[lane].Render("|"))
+			// Replace with the hold-bar marker on non-commit padding lines so
+			// the hold run is rendered as a continuous thick bar (┃) in the
+			// lane colour rather than a plain pipe character.
+			if col == markerCol {
+				sb.WriteString(styleLaneB[color2lane(mk.color)].Render(string(mk.r)))
+			} else {
+				sb.WriteString(styleLane[lane].Render("|"))
+			}
 		case '\\':
 			sb.WriteString(styleLane[lane].Render("/"))
 		case '/':
