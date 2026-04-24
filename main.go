@@ -366,8 +366,7 @@ func buildNotes(lines []gLine, holdMinRun int) []note {
 		p := i
 		for p < j {
 			holdSize := 0
-			endK := j          // default: consume the rest of the run
-			interrupted := false
+			endK := j // default: consume the rest of the run
 
 			for k := p; k < j; k++ {
 				holdSize++
@@ -378,12 +377,10 @@ func buildNotes(lines []gLine, holdMinRun int) []note {
 						// Interrupted: do not include commit k in this hold.
 						holdSize-- // back out commit k
 						endK = k
-						interrupted = true
 						break
 					}
 				}
 			}
-			_ = interrupted
 
 			if holdSize >= holdMinRun {
 				// Emit a single hold note spanning ci[p..endK-1].

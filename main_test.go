@@ -49,6 +49,11 @@ func TestParseLines(t *testing.T) {
 //   - lane 1 (feature branch): e4f5, 7c8d, c1d2  → 3 consecutive
 //   - lane 0 (main tail): f1a2, 4d5e, 9a8b        → 3 consecutive
 func TestBuildNotes_HoldDetection(t *testing.T) {
+	// Override holdRandIntn so probability checks always pass (return 0 < any threshold).
+	orig := holdRandIntn
+	holdRandIntn = func(int) int { return 0 }
+	defer func() { holdRandIntn = orig }()
+
 	lines := parseLines(sampleLog)
 	notes := buildNotes(lines, holdMinRun)
 
@@ -83,6 +88,11 @@ func TestBuildNotes_NoHoldForShortRun(t *testing.T) {
 // TestBuildNotes_HoldForExactMinRun verifies that exactly holdMinRun consecutive
 // commits produce a hold note.
 func TestBuildNotes_HoldForExactMinRun(t *testing.T) {
+	// Override holdRandIntn so probability checks always pass.
+	orig := holdRandIntn
+	holdRandIntn = func(int) int { return 0 }
+	defer func() { holdRandIntn = orig }()
+
 	parts := make([]string, holdMinRun)
 	for i := range parts {
 		parts[i] = "* abc1234 Commit"
@@ -98,6 +108,36 @@ func TestBuildNotes_HoldForExactMinRun(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected hold note for %d consecutive commits, found none", holdMinRun)
+	}
+}
+
+// TestBuildNotes_ProbabilisticInterruption verifies that a long run is split
+// into shorter segments when all probability rolls fail (holdRandIntn returns
+// a value ≥ every threshold).
+func TestBuildNotes_ProbabilisticInterruption(t *testing.T) {
+	// Always fail: return 100 ≥ any probability threshold (max is 90).
+	orig := holdRandIntn
+	holdRandIntn = func(int) int { return 100 }
+	defer func() { holdRandIntn = orig }()
+
+	// Build a run of 6 same-lane commits.
+	parts := make([]string, 6)
+	for i := range parts {
+		parts[i] = "* abc1234 Commit"
+	}
+	lines := parseLines(strings.Join(parts, "\n"))
+	notes := buildNotes(lines, holdMinRun)
+
+	// With all rolls failing at holdMinRun, every group of holdMinRun commits is
+	// emitted as individual notes and no hold is formed.
+	for _, n := range notes {
+		if n.isHold {
+			t.Errorf("expected no hold notes when probability always fails, got one")
+		}
+	}
+	// All 6 commits should be individual notes.
+	if len(notes) != 6 {
+		t.Errorf("expected 6 individual notes, got %d", len(notes))
 	}
 }
 
