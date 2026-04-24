@@ -576,9 +576,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			for i, r := range laneRunes {
 				if key == string(r) {
+					// Only score on a genuine new press, not on OS auto-repeat
+					// events fired while the key is held down. held[i] is cleared
+					// by handleTick after holdGap of silence, so it is false only
+					// when the key was not depressed on the previous event.
+					freshPress := !m.held[i]
 					m.lastPress[i] = time.Now()
+					m.lastPressTick[i] = m.tick
 					m.held[i] = true
-					m = m.tryHit(i) // always attempt; tryHit only scores nsActive notes
+					if freshPress {
+						m = m.tryHit(i)
+					}
 				}
 			}
 		}
