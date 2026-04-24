@@ -572,7 +572,8 @@ func genWAV(freq, amplitude float64, dur time.Duration, wt waveType) []byte {
 }
 
 // playWAV plays raw WAV bytes asynchronously.
-// It tries aplay (Linux/ALSA) first, then writes a temp file for afplay (macOS).
+// It tries aplay (Linux/ALSA) first, then writes a temp file and tries
+// afplay (macOS) followed by PowerShell Media.SoundPlayer (Windows).
 func playWAV(wav []byte) {
 	go func() {
 		cmd := exec.Command("aplay", "-q", "-")
@@ -591,7 +592,13 @@ func playWAV(wav []byte) {
 			return
 		}
 		f.Close()
-		exec.Command("afplay", name).Run() //nolint:errcheck
+		if exec.Command("afplay", name).Run() == nil {
+			return
+		}
+		// Windows fallback: use PowerShell's Media.SoundPlayer
+		exec.Command("powershell", "-c", //nolint:errcheck
+			fmt.Sprintf(`(New-Object Media.SoundPlayer '%s').PlaySync()`, name),
+		).Run()
 	}()
 }
 
