@@ -595,10 +595,12 @@ func playWAV(wav []byte) {
 		if exec.Command("afplay", name).Run() == nil {
 			return
 		}
-		// Windows fallback: use PowerShell's Media.SoundPlayer
-		exec.Command("powershell", "-c", //nolint:errcheck
-			fmt.Sprintf(`(New-Object Media.SoundPlayer '%s').PlaySync()`, name),
-		).Run()
+		// Windows fallback: use PowerShell's Media.SoundPlayer.
+		// Escape single quotes in the path to prevent command injection.
+		safeName := strings.ReplaceAll(name, "'", "''")
+		exec.Command("powershell", "-c",
+			fmt.Sprintf(`(New-Object Media.SoundPlayer '%s').PlaySync()`, safeName),
+		).Run() //nolint:errcheck
 	}()
 }
 
