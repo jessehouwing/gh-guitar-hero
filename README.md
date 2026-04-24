@@ -6,7 +6,7 @@ commit graph into a Guitar Hero–style rhythm game. 🎸
 ## Demo
 
 ```
-* a1b2c3d Merge feature branch into main        ← commits scroll upward
+* a1b2c3d Merge feature branch into main        
 |\
 | * e4f5a6b Add login UI
 | * 7c8d9e0 Fix auth token refresh
@@ -34,7 +34,7 @@ gh guitar-hero
 
 ## How to play
 
-The git commit graph scrolls **upward**. Each branch occupies one of nine
+The git commit graph scrolls. Each branch occupies one of nine
 colour-coded lanes:
 
 | Lane | Colour | Key |
