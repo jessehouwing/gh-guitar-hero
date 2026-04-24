@@ -211,3 +211,222 @@ func TestTruncate(t *testing.T) {
 		t.Error("truncated string should end with ellipsis")
 	}
 }
+
+// ─── applyBranchRunes ─────────────────────────────────────────────────────────
+
+// TestApplyBranchRunes exercises the branch-projection rules that were the
+// source of the "stray | far to the right" bugs.
+//
+// Key invariants under test:
+//  1. '*' sets '|' at its column but must NOT stop processing; graph chars
+//     that follow on the same commit line (e.g. "* | abc1234") must be
+//     captured.
+//  2. Processing stops at the first non-graph character (start of SHA or
+//     message text), so '/' or '\' inside commit messages never produce
+//     spurious '|' entries.
+func TestApplyBranchRunes(t *testing.T) {
+	run := func(input string) string {
+		runes := []rune(input)
+		out := make([]rune, len(runes)+4)
+		for i := range out {
+			out[i] = ' '
+		}
+		applyBranchRunes(runes, out)
+		return strings.TrimRight(string(out), " ")
+	}
+
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"plain pipes",
+			"| |",
+			"| |",
+		},
+		{
+			// '\' at pos 1 projects '|' one column to the right (pos 2).
+			"backslash projects right",
+			`|\ `,
+			"| |",
+		},
+		{
+			// '/' at pos 1 projects '|' one column to the left (pos 0),
+			// which is already occupied — result is still just one pipe.
+			"slash onto existing pipe",
+			"|/ ",
+			"|",
+		},
+		{
+			// '/' at pos 1, nothing at pos 0 — creates a new pipe at pos 0.
+			"slash opens new column",
+			" / ",
+			"|",
+		},
+		{
+			// Critical regression case: '*' must NOT cause an early return.
+			// The '|' at column 2 is a live parallel branch and must appear.
+			"star with branch after it",
+			"* |   abc1234 msg",
+			"| |",
+		},
+		{
+			// SHA follows '*' immediately (no extra graph chars) — one pipe only.
+			"star only, sha follows immediately",
+			"* abc1234 msg",
+			"|",
+		},
+		{
+			// '/' inside the commit message must NOT produce a stray '|'.
+			// Processing stops at the SHA ('a' is non-graph), so the slash in
+			// "user/repo" is never reached.
+			"slash in message is ignored",
+			"* abc1234 Merge PR from user/repo",
+			"|",
+		},
+		{
+			// '\' inside commit message must not project a pipe.
+			"backslash in message is ignored",
+			`* abc1234 Fix path C:\folder`,
+			"|",
+		},
+		{
+			// Two live branches follow '*' — both pipes must be captured.
+			"star with two trailing branches",
+			"* | |   abc1234 msg",
+			"| | |",
+		},
+	}
+
+	for _, tc := range cases {
+		got := run(tc.input)
+		if got != tc.want {
+			t.Errorf("[%s] applyBranchRunes(%q) = %q, want %q",
+				tc.name, tc.input, got, tc.want)
+		}
+	}
+}
+
+// ─── derivePaddingText ────────────────────────────────────────────────────────
+
+// TestDerivePaddingText verifies that the padding line inserted after each
+// commit correctly reflects all active branches and contains no spurious '|'
+// characters caused by message content.
+func TestDerivePaddingText(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "single-lane commit",
+			raw:  "* abc1234 Commit",
+			want: "|",
+		},
+		{
+			// "* |   sha …": the '|' at col 2 is a live parallel branch.
+			// It must appear in the padding even though it follows the '*'.
+			name: "commit with live branch after star",
+			raw:  "* |   abc1234 Commit\n| |",
+			want: "| |",
+		},
+		{
+			// A '/' in a PR title (e.g. "from user/repo") must not generate a
+			// stray '|' far to the right of the graph columns.
+			name: "no stray pipe from slash in PR title",
+			raw:  "* |   abc1234 Merge PR from user/repo\n| |",
+			want: "| |",
+		},
+		{
+			// The next line reveals a branch opening ('\' → '|' one col right).
+			name: "branch opens on line below commit",
+			raw:  "* abc1234 Commit\n|\\ ",
+			want: "| |",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := parseLines(tc.raw)
+			ci := -1
+			for i, l := range lines {
+				if l.commit {
+					ci = i
+					break
+				}
+			}
+			if ci < 0 {
+				t.Fatal("no commit line in input")
+			}
+			got := derivePaddingText(lines, ci)
+			if got != tc.want {
+				t.Errorf("derivePaddingText: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ─── tryHit / wrong-lane guard ────────────────────────────────────────────────
+
+// TestTryHit_WrongLaneNeverScores verifies that pressing a lane key when the
+// active note is in a *different* lane does not mark the note as hit.
+func TestTryHit_WrongLaneNeverScores(t *testing.T) {
+	// Build a minimal model with one active note in lane 0.
+	m := model{
+		hitRow:    10,
+		scrollPos: 10, // hitLine = scrollPos - hitRow = 0
+		notes: []note{
+			{lane: 0, lineIdx: 0, state: nsActive},
+		},
+	}
+
+	// Press lane 1 (wrong lane).
+	m2 := m.tryHit(1)
+	if m2.notes[0].state != nsActive {
+		t.Errorf("wrong-lane press changed note state to %v, want nsActive", m2.notes[0].state)
+	}
+	if m2.score != 0 {
+		t.Errorf("wrong-lane press awarded %d points, want 0", m2.score)
+	}
+}
+
+// TestTryHit_CorrectLaneScores verifies that pressing the correct lane key
+// when a note is active and within the hit window does score it.
+func TestTryHit_CorrectLaneScores(t *testing.T) {
+	m := model{
+		hitRow:    10,
+		scrollPos: 10, // hitLine = 0; note at lineIdx 0 → diff = 0 → PERFECT
+		notes: []note{
+			{lane: 2, lineIdx: 0, state: nsActive},
+		},
+	}
+
+	m2 := m.tryHit(2)
+	if m2.notes[0].state != nsHit {
+		t.Errorf("correct-lane press: note state = %v, want nsHit", m2.notes[0].state)
+	}
+	if m2.score == 0 {
+		t.Error("correct-lane press awarded 0 points")
+	}
+}
+
+// TestTryHit_OutsideWindowNotScored verifies that the correct lane key pressed
+// when the note is too far from the hit line (> hitWindow) does not score.
+func TestTryHit_OutsideWindowNotScored(t *testing.T) {
+	m := model{
+		hitRow:    10,
+		scrollPos: 10, // hitLine = 0; note at lineIdx hitWindow+2 → outside window
+		notes: []note{
+			{lane: 0, lineIdx: hitWindow + 2, state: nsActive},
+		},
+	}
+
+	m2 := m.tryHit(0)
+	if m2.notes[0].state != nsActive {
+		t.Errorf("out-of-window press changed note state to %v, want nsActive", m2.notes[0].state)
+	}
+	if m2.score != 0 {
+		t.Errorf("out-of-window press awarded %d points, want 0", m2.score)
+	}
+}

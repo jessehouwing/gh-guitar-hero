@@ -189,8 +189,9 @@ type model struct {
 	tick  int
 	sTick int // sub-tick counter for scrolling
 
-	held      [numLanes]bool
-	lastPress [numLanes]time.Time
+	held          [numLanes]bool
+	lastPress     [numLanes]time.Time
+	lastPressTick [numLanes]int // tick when the lane key was most recently pressed
 
 	sparks []spark
 
@@ -298,15 +299,22 @@ func derivePaddingText(lines []gLine, commitIdx int) string {
 }
 
 // applyBranchRunes marks active branch positions in out from the given rune slice.
-// Rules: '|' and '*' → '|' at that column; '\' → '|' one column to the right;
-// '/' → '|' one column to the left. All other characters are ignored.
+// Rules: '*' and '|' → '|' at that column; '\' → '|' one column to the right;
+// '/' → '|' one column to the left. Spaces and '_' are skipped. Any other
+// character (e.g. the start of a SHA or commit message) ends processing
+// immediately so that '/' or '\' inside a commit message (e.g. "user/repo")
+// are never mistaken for branch decoration.
 func applyBranchRunes(runes []rune, out []rune) {
 	for i, r := range runes {
 		if i >= len(out) {
 			break // out is shorter than runes; no further columns can be written
 		}
 		switch r {
-		case '|', '*':
+		case '*':
+			out[i] = '|'
+			// Do NOT return: graph chars like '|' can still appear after '*'
+			// on a commit line (e.g. "* |   abc1234 msg" has a live branch at col 2).
+		case '|':
 			out[i] = '|'
 		case '\\':
 			if i+1 < len(out) {
@@ -316,6 +324,13 @@ func applyBranchRunes(runes []rune, out []rune) {
 			if i > 0 {
 				out[i-1] = '|'
 			}
+		case ' ', '_':
+			// graph spacing / horizontal connector — ignored
+		default:
+			// First non-graph character signals the start of commit content
+			// (SHA + message). Stop here to avoid treating message text as
+			// branch decoration.
+			return
 		}
 	}
 }
@@ -561,9 +576,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			for i, r := range laneRunes {
 				if key == string(r) {
+					// Only score on a genuine new press, not on OS auto-repeat
+					// events fired while the key is held down. held[i] is cleared
+					// by handleTick after holdGap of silence, so it is false only
+					// when the key was not depressed on the previous event.
+					freshPress := !m.held[i]
 					m.lastPress[i] = time.Now()
+					m.lastPressTick[i] = m.tick
 					m.held[i] = true
-					m = m.tryHit(i) // always attempt; tryHit only scores nsActive notes
+					if freshPress {
+						m = m.tryHit(i)
+					}
 				}
 			}
 		}
@@ -770,9 +793,8 @@ func (m model) viewMenu() string {
 
 	laneList := ""
 	for i := 0; i < numLanes; i++ {
-		laneList += fmt.Sprintf("    Lane %d (%s) → press  %s\n",
+		laneList += fmt.Sprintf("    Lane %d → press  %s\n",
 			i+1,
-			styleLaneB[i].Render(strings.ToLower(laneHex[i][:7])),
 			styleLaneB[i].Render(laneLabels[i]),
 		)
 	}
