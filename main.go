@@ -26,16 +26,32 @@ import (
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const (
-	numLanes    = 5
-	tickRate    = 50 * time.Millisecond // 20 FPS
-	scrollEvery = 2                     // ticks between line advances (100 ms/line)
-	hitWindow   = 5                     // ±lines tolerance around the hit zone
-	holdGap     = 200 * time.Millisecond // key "held" if last press < this ago
-	holdMinRun  = 3                     // consecutive same-lane commits → hold note
-	sparkLife   = 22                    // frames a firework particle lives
-	maxCommits  = 300                   // cap on git history depth
-	minH, minW  = 14, 50               // minimum terminal size
+	numLanes   = 5
+	tickRate   = 50 * time.Millisecond  // 20 FPS
+	hitWindow  = 5                      // ±lines tolerance around the hit zone
+	holdGap    = 200 * time.Millisecond // key "held" if last press < this ago
+	holdMinRun = 3                      // default: consecutive same-lane commits → hold note
+	sparkLife  = 22                     // frames a firework particle lives
+	maxCommits = 300                    // cap on git history depth
+	minH, minW = 14, 50                // minimum terminal size
 )
+
+// ─── difficulty ───────────────────────────────────────────────────────────────
+
+type difficultyProfile struct {
+	label       string
+	scrollEvery int // ticks between line advances
+	holdMinRun  int // consecutive same-lane commits needed to form a hold note
+}
+
+var difficulties = []difficultyProfile{
+	{"Easy",   6, 2}, // slow scroll; pairs of same-lane commits become holds
+	{"Normal", 3, 3}, // moderate; triplets become holds
+	{"Hard",   2, 4}, // fast; need 4 same-lane commits for a hold
+	{"Expert", 1, 5}, // very fast; need 5 same-lane commits for a hold
+}
+
+const defaultDiffIdx = 1 // Normal
 
 // ─── lane colours & labels ────────────────────────────────────────────────────
 
@@ -132,9 +148,12 @@ type model struct {
 	notes    []note
 	notePtr  int // index of first unresolved (not yet hit/missed) note
 
-	w, h    int
-	hitRow  int // row index (from top) of the hit-zone separator
+	w, h      int
+	hitRow    int // row index (from top) of the hit-zone separator
 	scrollPos int // index of gLines shown at row 0
+
+	diffIdx     int // index into difficulties slice
+	scrollEvery int // ticks between line advances (set from difficulty on start)
 
 	tick  int
 	sTick int // sub-tick counter for scrolling
@@ -157,7 +176,7 @@ type model struct {
 // ─── git parsing ──────────────────────────────────────────────────────────────
 
 func newModel() model {
-	m := model{ph: phMenu, w: 80, h: 24}
+	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx}
 
 	out, err := exec.Command("git", "log",
 		"--graph", "--oneline", "--all", "--no-color",
@@ -173,7 +192,7 @@ func newModel() model {
 	}
 
 	m.lines = parseLines(string(out))
-	m.notes = buildNotes(m.lines)
+	m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
 	m.total = len(m.notes)
 	return m
 }
@@ -202,7 +221,7 @@ func parseLines(raw string) []gLine {
 
 // buildNotes scans commit lines and groups consecutive same-lane commits into
 // hold notes when the run is long enough.
-func buildNotes(lines []gLine) []note {
+func buildNotes(lines []gLine, holdMinRun int) []note {
 	// Collect indices of commit lines in order.
 	var ci []int
 	for i, l := range lines {
@@ -343,16 +362,38 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.ph {
 	case phMenu:
 		switch key {
+		case "left", "h":
+			if m.diffIdx > 0 {
+				m.diffIdx--
+				m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
+				m.total = len(m.notes)
+			}
+		case "right", "l":
+			if m.diffIdx < len(difficulties)-1 {
+				m.diffIdx++
+				m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
+				m.total = len(m.notes)
+			}
 		case "enter", " ":
 			if m.errMsg == "" {
 				m.ph = phPlay
-				m.scrollPos = 0
-				m.tick = 0
-				m.sTick = 0
 				m.hitRow = m.h - 5
 				if m.hitRow < 3 {
 					m.hitRow = 3
 				}
+				// Start from an empty screen so the player can see notes scrolling in.
+				m.scrollPos = -m.hitRow
+				m.scrollEvery = difficulties[m.diffIdx].scrollEvery
+				m.tick = 0
+				m.sTick = 0
+				// Rebuild notes with the holdMinRun for the chosen difficulty.
+				m.notes = buildNotes(m.lines, difficulties[m.diffIdx].holdMinRun)
+				m.total = len(m.notes)
+				m.notePtr = 0
+				m.score = 0
+				m.streak = 0
+				m.maxStr = 0
+				m.misses = 0
 			}
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -378,6 +419,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m2 := newModel()
 			m2.w, m2.h = m.w, m.h
 			m2.hitRow = m.hitRow
+			m2.diffIdx = m.diffIdx
+			// Rebuild notes for the previously chosen difficulty.
+			m2.notes = buildNotes(m2.lines, difficulties[m2.diffIdx].holdMinRun)
+			m2.total = len(m2.notes)
 			return m2, tickCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -460,7 +505,7 @@ func (m model) handleTick() (tea.Model, tea.Cmd) {
 
 	// Advance scroll
 	m.sTick++
-	if m.sTick >= scrollEvery {
+	if m.sTick >= m.scrollEvery {
 		m.sTick = 0
 		m.scrollPos++
 	}
@@ -570,6 +615,16 @@ func (m model) viewMenu() string {
 		)
 	}
 
+	// Build difficulty selector display
+	diffSelector := "  "
+	for i, d := range difficulties {
+		if i == m.diffIdx {
+			diffSelector += styleLaneB[2].Render("[ " + d.label + " ]")
+		} else {
+			diffSelector += styleDim.Render("  " + d.label + "  ")
+		}
+	}
+
 	return fmt.Sprintf(`
 %s
 
@@ -588,12 +643,15 @@ func (m model) viewMenu() string {
   Your streak multiplies your score!
   ─────────────────────────────────────────────────────────────
 
+  DIFFICULTY:  ← %s →    (← → to change)
+
   ENTER / SPACE = Start    Q = Quit
 
 `,
 		titleStyle.Render("  🎸  Git Guitar Hero  "),
 		m.total, m.total,
 		laneList,
+		diffSelector,
 	)
 }
 
