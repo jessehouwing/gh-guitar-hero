@@ -419,8 +419,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.hitRow < 3 {
 					m.hitRow = 3
 				}
-				// Start from an empty screen so the player can see notes scrolling in.
-				m.scrollPos = -m.hitRow
+				// Notes fall from the top; scrollPos=0 puts the latest commit at row 0.
+				m.scrollPos = 0
 				m.scrollEvery = speeds[m.speedIdx].scrollEvery
 				m.tick = 0
 				m.sTick = 0
@@ -473,7 +473,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // tryHit checks whether the pressed lane corresponds to an active note.
 func (m model) tryHit(lane int) model {
-	hitLine := m.scrollPos + m.hitRow
+	hitLine := m.scrollPos - m.hitRow
 	for i := m.notePtr; i < len(m.notes); i++ {
 		n := &m.notes[i]
 		if n.state != nsActive {
@@ -558,7 +558,7 @@ func (m model) handleTick() (tea.Model, tea.Cmd) {
 		m.scrollPos++
 	}
 
-	hitLine := m.scrollPos + m.hitRow
+	hitLine := m.scrollPos - m.hitRow
 
 	// Update note states
 	for i := range m.notes {
@@ -686,7 +686,7 @@ func (m model) viewMenu() string {
   Loaded %d commits  (%d playable notes)
 
   HOW TO PLAY  ─────────────────────────────────────────────────
-  The git commit graph scrolls upward.
+  The git commit graph scrolls downward.
   When a commit (●) reaches the ══ hit-zone line, press the
   matching key for its column:
 
@@ -774,7 +774,7 @@ func (m model) viewGame() string {
 	// Build note-marker lookup: gLine index → noteMarker
 	markers := make(map[int]noteMarker)
 	for _, n := range m.notes {
-		row := n.lineIdx - m.scrollPos
+		row := m.scrollPos - n.lineIdx
 		if row < 0 || row >= m.h {
 			continue
 		}
@@ -790,7 +790,7 @@ func (m model) viewGame() string {
 		if (n.state == nsActive || n.state == nsHit) && n.isHold {
 			for k := 1; k < n.holdLines; k++ {
 				li := n.lineIdx + k
-				innerRow := li - m.scrollPos
+				innerRow := m.scrollPos - li
 				if innerRow >= 0 && innerRow < m.h {
 					if _, exists := markers[li]; !exists {
 						markers[li] = noteMarker{'┃', laneHex[n.lane]}
@@ -810,7 +810,7 @@ func (m model) viewGame() string {
 			continue
 		}
 
-		lineIdx := m.scrollPos + row
+		lineIdx := m.scrollPos - row
 
 		// Rows outside git history: only sparks
 		if lineIdx < 0 || lineIdx >= len(m.lines) {
