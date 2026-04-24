@@ -12,7 +12,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -569,39 +568,6 @@ func genWAV(freq, amplitude float64, dur time.Duration, wt waveType) []byte {
 		binary.LittleEndian.PutUint16(buf[44+i*2:], uint16(s16))
 	}
 	return buf
-}
-
-// playWAV plays raw WAV bytes asynchronously.
-// It tries aplay (Linux/ALSA) first, then writes a temp file and tries
-// afplay (macOS) followed by PowerShell Media.SoundPlayer (Windows).
-func playWAV(wav []byte) {
-	go func() {
-		cmd := exec.Command("aplay", "-q", "-")
-		cmd.Stdin = bytes.NewReader(wav)
-		if cmd.Run() == nil {
-			return
-		}
-		f, err := os.CreateTemp("", "ghgh-*.wav")
-		if err != nil {
-			return
-		}
-		name := f.Name()
-		defer os.Remove(name)
-		if _, err := f.Write(wav); err != nil {
-			f.Close()
-			return
-		}
-		f.Close()
-		if exec.Command("afplay", name).Run() == nil {
-			return
-		}
-		// Windows fallback: use PowerShell's Media.SoundPlayer.
-		// Escape single quotes in the path to prevent command injection.
-		safeName := strings.ReplaceAll(name, "'", "''")
-		exec.Command("powershell", "-c",
-			fmt.Sprintf(`(New-Object Media.SoundPlayer '%s').PlaySync()`, safeName),
-		).Run() //nolint:errcheck
-	}()
 }
 
 // playHitTone plays the harmonious tone for the given lane (correct hit).
