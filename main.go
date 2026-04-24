@@ -586,7 +586,10 @@ func playWAV(wav []byte) {
 		}
 		name := f.Name()
 		defer os.Remove(name)
-		f.Write(wav) //nolint:errcheck
+		if _, err := f.Write(wav); err != nil {
+			f.Close()
+			return
+		}
 		f.Close()
 		exec.Command("afplay", name).Run() //nolint:errcheck
 	}()
@@ -608,7 +611,7 @@ func playMissBuzz() {
 	playWAV(genWAV(80, 0.6, 200*time.Millisecond, waveSquare))
 }
 
-
+// ─── bubbletea wiring ─────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
 	return tickCmd()

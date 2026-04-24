@@ -434,6 +434,8 @@ func TestTryHit_WrongLaneBreaksStreak(t *testing.T) {
 		t.Errorf("wrong-lane press changed note state to %v, want nsActive", m2.notes[0].state)
 	}
 }
+
+// TestTryHit_OutsideWindowNotScored verifies that the correct lane key pressed
 // when the note is too far from the hit line (> hitWindow) does not score.
 func TestTryHit_OutsideWindowNotScored(t *testing.T) {
 	m := model{
