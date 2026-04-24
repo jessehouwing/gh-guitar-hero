@@ -50,7 +50,7 @@ func TestParseLines(t *testing.T) {
 //   - lane 0 (main tail): f1a2, 4d5e, 9a8b        → 3 consecutive
 func TestBuildNotes_HoldDetection(t *testing.T) {
 	lines := parseLines(sampleLog)
-	notes := buildNotes(lines)
+	notes := buildNotes(lines, holdMinRun)
 
 	holdCount := 0
 	for _, n := range notes {
@@ -72,7 +72,7 @@ func TestBuildNotes_HoldDetection(t *testing.T) {
 func TestBuildNotes_NoHoldForShortRun(t *testing.T) {
 	input := "* abc1234 Commit A\n* def5678 Commit B\n"
 	lines := parseLines(input)
-	notes := buildNotes(lines)
+	notes := buildNotes(lines, holdMinRun)
 	for _, n := range notes {
 		if n.isHold {
 			t.Errorf("unexpected hold note for 2 consecutive commits (holdMinRun=%d)", holdMinRun)
@@ -88,7 +88,7 @@ func TestBuildNotes_HoldForExactMinRun(t *testing.T) {
 		parts[i] = "* abc1234 Commit"
 	}
 	lines := parseLines(strings.Join(parts, "\n"))
-	notes := buildNotes(lines)
+	notes := buildNotes(lines, holdMinRun)
 
 	found := false
 	for _, n := range notes {
