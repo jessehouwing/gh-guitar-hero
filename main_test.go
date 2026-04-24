@@ -411,6 +411,30 @@ func TestTryHit_CorrectLaneScores(t *testing.T) {
 	}
 }
 
+// TestTryHit_WrongLaneBreaksStreak verifies that pressing a lane key when there
+// is an active note in the hit window but in a different lane resets the streak
+// to zero.
+func TestTryHit_WrongLaneBreaksStreak(t *testing.T) {
+	m := model{
+		hitRow:    10,
+		scrollPos: 10, // hitLine = 0; note at lineIdx 0 → diff = 0 → in window
+		streak:    5,
+		notes: []note{
+			{lane: 0, lineIdx: 0, state: nsActive},
+		},
+	}
+
+	// Press lane 1 (wrong lane) while a note is active in the window.
+	m2 := m.tryHit(1)
+	if m2.streak != 0 {
+		t.Errorf("wrong-lane press did not break streak: got %d, want 0", m2.streak)
+	}
+	// Note must remain active (not penalised directly).
+	if m2.notes[0].state != nsActive {
+		t.Errorf("wrong-lane press changed note state to %v, want nsActive", m2.notes[0].state)
+	}
+}
+
 // TestTryHit_OutsideWindowNotScored verifies that the correct lane key pressed
 // when the note is too far from the hit line (> hitWindow) does not score.
 func TestTryHit_OutsideWindowNotScored(t *testing.T) {

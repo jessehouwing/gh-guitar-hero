@@ -7,10 +7,13 @@ package main
 //
 // Controls: A S D F G H J K L — hit the note in that lane
 //           Hold key   — for long runs on a single branch
+//           M          — toggle sound on/off
 //           Q / Ctrl+C — quit at any time
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand"
@@ -203,12 +206,14 @@ type model struct {
 
 	fbMsg string
 	fbEnd int // tick when feedback message expires
+
+	soundOn bool // play tones / buzz when true
 }
 
 // ─── git parsing ──────────────────────────────────────────────────────────────
 
 func newModel() model {
-	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx, speedIdx: defaultSpeedIdx}
+	m := model{ph: phMenu, w: 80, h: 24, diffIdx: defaultDiffIdx, speedIdx: defaultSpeedIdx, soundOn: true}
 
 	out, err := exec.Command("git", "log",
 		"--graph", "--oneline", "--no-color",
@@ -490,6 +495,122 @@ func gradeFor(pct int) string {
 	}
 }
 
+// ─── audio ────────────────────────────────────────────────────────────────────
+
+// laneFreqs maps each lane (0-8) to a musical frequency (Hz).
+// The notes form an A minor pentatonic scale across two octaves so that all
+// nine lanes are harmonious with each other.
+var laneFreqs = [numLanes]float64{
+	220.00, // A3  – lane A
+	261.63, // C4  – lane S
+	293.66, // D4  – lane D
+	329.63, // E4  – lane F
+	392.00, // G4  – lane G
+	440.00, // A4  – lane H
+	523.25, // C5  – lane J
+	587.33, // D5  – lane K
+	659.25, // E5  – lane L
+}
+
+const audioSampleRate = 22050
+
+type waveType int
+
+const (
+	waveSine   waveType = iota
+	waveSquare          // used for the miss buzz
+)
+
+// genWAV builds a mono 16-bit PCM WAV byte slice.  The tone is shaped by wt
+// and faded in/out over 10 ms to avoid clicks.
+func genWAV(freq, amplitude float64, dur time.Duration, wt waveType) []byte {
+	numSamples := int(float64(audioSampleRate) * dur.Seconds())
+	if numSamples <= 0 {
+		numSamples = 1
+	}
+	dataSize := numSamples * 2
+	buf := make([]byte, 44+dataSize)
+
+	copy(buf[0:], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:], uint32(36+dataSize))
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 16)                    // chunk size
+	binary.LittleEndian.PutUint16(buf[20:], 1)                     // PCM
+	binary.LittleEndian.PutUint16(buf[22:], 1)                     // mono
+	binary.LittleEndian.PutUint32(buf[24:], audioSampleRate)        // sample rate
+	binary.LittleEndian.PutUint32(buf[28:], audioSampleRate*2)      // byte rate
+	binary.LittleEndian.PutUint16(buf[32:], 2)                     // block align
+	binary.LittleEndian.PutUint16(buf[34:], 16)                    // bits/sample
+	copy(buf[36:], "data")
+	binary.LittleEndian.PutUint32(buf[40:], uint32(dataSize))
+
+	fadeLen := audioSampleRate / 100 // 10 ms fade
+	if fadeLen > numSamples/2 {
+		fadeLen = numSamples / 2
+	}
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / float64(audioSampleRate)
+		var s float64
+		switch wt {
+		case waveSquare:
+			s = math.Copysign(1.0, math.Sin(2*math.Pi*freq*t))
+		default:
+			s = math.Sin(2 * math.Pi * freq * t)
+		}
+		s *= amplitude
+		env := 1.0
+		if i < fadeLen {
+			env = float64(i) / float64(fadeLen)
+		} else if i >= numSamples-fadeLen {
+			env = float64(numSamples-i) / float64(fadeLen)
+		}
+		s16 := int16(s * env * 32767)
+		binary.LittleEndian.PutUint16(buf[44+i*2:], uint16(s16))
+	}
+	return buf
+}
+
+// playWAV plays raw WAV bytes asynchronously.
+// It tries aplay (Linux/ALSA) first, then writes a temp file for afplay (macOS).
+func playWAV(wav []byte) {
+	go func() {
+		cmd := exec.Command("aplay", "-q", "-")
+		cmd.Stdin = bytes.NewReader(wav)
+		if cmd.Run() == nil {
+			return
+		}
+		f, err := os.CreateTemp("", "ghgh-*.wav")
+		if err != nil {
+			return
+		}
+		name := f.Name()
+		defer os.Remove(name)
+		if _, err := f.Write(wav); err != nil {
+			f.Close()
+			return
+		}
+		f.Close()
+		exec.Command("afplay", name).Run() //nolint:errcheck
+	}()
+}
+
+// playHitTone plays the harmonious tone for the given lane (correct hit).
+func playHitTone(lane int) {
+	playWAV(genWAV(laneFreqs[lane], 0.5, 150*time.Millisecond, waveSine))
+}
+
+// playWrongTone plays the pressed lane's note shifted 2 octaves up and
+// slightly detuned, signalling a wrong key press.
+func playWrongTone(lane int) {
+	playWAV(genWAV(laneFreqs[lane]*4*1.05, 0.4, 100*time.Millisecond, waveSine))
+}
+
+// playMissBuzz plays an 80 Hz square-wave buzz for a missed note.
+func playMissBuzz() {
+	playWAV(genWAV(80, 0.6, 200*time.Millisecond, waveSquare))
+}
+
 // ─── bubbletea wiring ─────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
@@ -567,6 +688,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "m":
+			m.soundOn = !m.soundOn
 		}
 
 	case phPlay:
@@ -599,6 +722,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m2.hitRow = m.hitRow
 			m2.diffIdx = m.diffIdx
 			m2.speedIdx = m.speedIdx
+			m2.soundOn = m.soundOn
 			// Rebuild notes for the previously chosen difficulty.
 			m2.notes = buildNotes(m2.lines, difficulties[m2.diffIdx].holdMinRun)
 			m2.total = len(m2.notes)
@@ -611,18 +735,33 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// tryHit checks whether the pressed lane corresponds to an active note.
+// tryHit checks whether the pressed lane corresponds to an active note within
+// the hit window.  If an active note exists in the window but in a different
+// lane, the streak is broken (wrong key press penalty).
 func (m model) tryHit(lane int) model {
 	hitLine := m.scrollPos - m.hitRow
+
+	hitCorrectLane := false
+	anyInWindow := false
+
 	for i := m.notePtr; i < len(m.notes); i++ {
 		n := &m.notes[i]
 		if n.state != nsActive {
 			continue
 		}
-		if n.lane != lane {
+		diff := iabs(n.lineIdx - hitLine)
+		if diff > hitWindow {
 			continue
 		}
-		diff := iabs(n.lineIdx - hitLine)
+		// Active note within the hit window.
+		anyInWindow = true
+
+		if n.lane != lane {
+			continue // Different lane — keep scanning for a correct-lane note.
+		}
+
+		// Correct lane!
+		hitCorrectLane = true
 		pts, fb := 0, ""
 		switch {
 		case diff <= 1:
@@ -643,9 +782,23 @@ func (m model) tryHit(lane int) model {
 			}
 			m.fbMsg = fb
 			m.fbEnd = m.tick + 28
+			if m.soundOn {
+				playHitTone(lane)
+			}
 		}
-		break
+		break // Stop after the first note found for this lane.
 	}
+
+	if !hitCorrectLane && anyInWindow {
+		// There were notes in the hit window but none in the pressed lane.
+		m.streak = 0
+		m.fbMsg = "WRONG!  "
+		m.fbEnd = m.tick + 20
+		if m.soundOn {
+			playWrongTone(lane)
+		}
+	}
+
 	return m
 }
 
@@ -717,6 +870,9 @@ func (m model) handleTick() (tea.Model, tea.Cmd) {
 				m.streak = 0
 				m.fbMsg = "MISS    "
 				m.fbEnd = m.tick + 20
+				if m.soundOn {
+					playMissBuzz()
+				}
 			}
 			// Award incremental hold-note score while the key is held
 			if n.isHold && m.held[n.lane] && m.tick%4 == 0 {
@@ -819,6 +975,14 @@ func (m model) viewMenu() string {
 		}
 	}
 
+	// Build sound toggle display
+	soundToggle := ""
+	if m.soundOn {
+		soundToggle = styleLaneB[1].Render("[ ON  ]") + styleDim.Render("   OFF  ")
+	} else {
+		soundToggle = styleDim.Render("   ON   ") + styleLaneB[5].Render("[ OFF ]")
+	}
+
 	return fmt.Sprintf(`
 %s
 
@@ -835,10 +999,12 @@ func (m model) viewMenu() string {
 
   PERFECT = ×3 pts   GREAT = ×2 pts   GOOD = ×1 pt
   Your streak multiplies your score!
+  Wrong key press breaks your streak!
   ─────────────────────────────────────────────────────────────
 
   DIFFICULTY:  ← %s →    (← → to change)
   SPEED:       ↑ %s ↓    (↑ ↓ to change)
+  SOUND:         %s      (M to toggle)
 
   ENTER / SPACE = Start    Q = Quit
 
@@ -848,6 +1014,7 @@ func (m model) viewMenu() string {
 		laneList,
 		diffSelector,
 		speedSelector,
+		soundToggle,
 	)
 }
 
