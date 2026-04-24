@@ -61,7 +61,7 @@ type speedProfile struct {
 
 var speeds = []speedProfile{
 	{"Slowest", 10}, // very relaxed scroll
-	{"Slow",     6}, // gentle scroll
+	{"Slow",    30}, // gentle scroll
 	{"Normal",   3}, // moderate scroll
 	{"Fast",     2}, // quick scroll
 	{"Fastest",  1}, // very fast scroll
@@ -468,7 +468,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m, tickCmd()
+	return m, nil
 }
 
 // tryHit checks whether the pressed lane corresponds to an active note.
