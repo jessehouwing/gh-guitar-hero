@@ -14,7 +14,7 @@ commit graph into a Guitar Hero–style rhythm game. 🎸
 * f1a2b3c Update dependencies
 * 4d5e6f7 Add CI pipeline
 ══════════════════════════════════════  ← hit zone (press the matching key!)
-  [A]      [S]      [D]      [F]      [G]
+  [A]  [S]  [D]  [F]  [G]  [H]  [J]  [K]  [L]
  Score: 1200  Streak: 4x  Best: 7x  Misses: 1
 ```
 
@@ -34,7 +34,7 @@ gh guitar-hero
 
 ## How to play
 
-The git commit graph scrolls **upward**. Each branch occupies one of five
+The git commit graph scrolls **upward**. Each branch occupies one of nine
 colour-coded lanes:
 
 | Lane | Colour | Key |
@@ -44,6 +44,10 @@ colour-coded lanes:
 | 3 | 🟡 Yellow | **D** |
 | 4 | 🔵 Blue | **F** |
 | 5 | 🟣 Purple | **G** |
+| 6 | 🟠 Orange | **H** |
+| 7 | 🩵 Cyan | **J** |
+| 8 | 🩷 Pink | **K** |
+| 9 | 🟩 Lime | **L** |
 
 1. Watch a commit `●` approaching the `══` hit-zone line.
 2. Press the matching key **when the commit reaches the hit-zone**.
@@ -78,7 +82,7 @@ Your current streak boosts every hit:
 
 | Key | Action |
 |-----|--------|
-| `A` `S` `D` `F` `G` | Hit lane 1–5 |
+| `A` `S` `D` `F` `G` `H` `J` `K` `L` | Hit lane 1–9 |
 | `Enter` / `Space` | Start game / Confirm |
 | `R` | Restart (game-over screen) |
 | `Q` / `Ctrl+C` | Quit |

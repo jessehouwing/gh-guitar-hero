@@ -5,7 +5,7 @@ package main
 //
 // Usage:  gh guitar-hero
 //
-// Controls: A S D F G  — hit the note in that lane
+// Controls: A S D F G H J K L — hit the note in that lane
 //           Hold key   — for long runs on a single branch
 //           Q / Ctrl+C — quit at any time
 
@@ -26,14 +26,14 @@ import (
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const (
-	numLanes   = 5
+	numLanes   = 9
 	tickRate   = 50 * time.Millisecond  // 20 FPS
 	hitWindow  = 5                      // ±lines tolerance around the hit zone
 	holdGap    = 200 * time.Millisecond // key "held" if last press < this ago
 	holdMinRun = 3                      // default: consecutive same-lane commits → hold note
 	sparkLife  = 22                     // frames a firework particle lives
 	maxCommits = 300                    // cap on git history depth
-	minH, minW = 14, 50                // minimum terminal size
+	minH, minW = 14, 72                // minimum terminal size (9 lanes need more width)
 )
 
 // ─── difficulty ───────────────────────────────────────────────────────────────
@@ -72,15 +72,19 @@ const defaultSpeedIdx = 2 // Normal
 // ─── lane colours & labels ────────────────────────────────────────────────────
 
 var laneHex = [numLanes]string{
-	"#FF6B6B", // red
-	"#6BCB77", // green
-	"#FFD93D", // yellow
-	"#4D96FF", // blue
-	"#C77DFF", // purple
+	"#FF6B6B", // red    – A
+	"#6BCB77", // green  – S
+	"#FFD93D", // yellow – D
+	"#4D96FF", // blue   – F
+	"#C77DFF", // purple – G
+	"#FF9F43", // orange – H
+	"#00D2FF", // cyan   – J
+	"#FF78C4", // pink   – K
+	"#A8FF3E", // lime   – L
 }
 
-var laneLabels = [numLanes]string{"A", "S", "D", "F", "G"}
-var laneRunes = [numLanes]rune{'a', 's', 'd', 'f', 'g'}
+var laneLabels = [numLanes]string{"A", "S", "D", "F", "G", "H", "J", "K", "L"}
+var laneRunes = [numLanes]rune{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'}
 
 // Pre-built cached styles (avoid allocating per frame)
 var (
@@ -316,8 +320,28 @@ func applyBranchRunes(runes []rune, out []rune) {
 	}
 }
 
+// holdRng is the random source used for probabilistic hold grouping. It is a
+// package-level variable so tests can substitute a deterministic source.
+var holdRng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+// holdRandIntn returns a non-negative random int in [0, n).  Exposed as a
+// variable so tests can replace it with a deterministic implementation.
+var holdRandIntn = func(n int) int { return holdRng.Intn(n) }
+
 // buildNotes scans commit lines and groups consecutive same-lane commits into
-// hold notes when the run is long enough.
+// hold notes with probabilistic length limiting.
+//
+// When a run of same-lane commits reaches holdMinRun, a hold begins. Each
+// additional commit is accepted into the hold with a decreasing probability:
+//
+//	holdMinRun commits → 90 %
+//	holdMinRun+1       → 85 %
+//	holdMinRun+2       → 80 %
+//	…
+//
+// If a probability roll fails (or the probability drops to ≤ 0 %), the hold is
+// finalised and processing resumes from the interrupting commit so a new hold
+// can potentially start there.
 func buildNotes(lines []gLine, holdMinRun int) []note {
 	// Collect indices of commit lines in order.
 	var ci []int
@@ -332,35 +356,61 @@ func buildNotes(lines []gLine, holdMinRun int) []note {
 	for i < len(ci) {
 		lane := lines[ci[i]].lane
 
-		// Count consecutive commits on the same lane.
+		// Find the extent of the consecutive same-lane run.
 		j := i + 1
 		for j < len(ci) && lines[ci[j]].lane == lane {
 			j++
 		}
-		run := j - i
+		// ci[i..j-1] is the full run; process it in segments.
 
-		holdLines := 0
-		if run >= holdMinRun {
-			// Span from first to last commit in the run (inclusive of decorating lines).
-			holdLines = ci[j-1] - ci[i] + 1
+		p := i
+		for p < j {
+			holdSize := 0
+			endK := j // default: consume the rest of the run
+
+			for k := p; k < j; k++ {
+				holdSize++
+				if holdSize >= holdMinRun {
+					// Probability decreases by 5 % for each commit beyond holdMinRun.
+					prob := 90 - (holdSize-holdMinRun)*5
+					if prob <= 0 || holdRandIntn(100) >= prob {
+						// Interrupted: do not include commit k in this hold.
+						holdSize-- // back out commit k
+						endK = k
+						break
+					}
+				}
+			}
+
+			if holdSize >= holdMinRun {
+				// Emit a single hold note spanning ci[p..endK-1].
+				holdLineSpan := ci[endK-1] - ci[p] + 1
+				notes = append(notes, note{
+					lane:      lane,
+					lineIdx:   ci[p],
+					sha:       lines[ci[p]].sha,
+					msg:       lines[ci[p]].msg,
+					state:     nsUpcoming,
+					isHold:    true,
+					holdLines: holdLineSpan,
+				})
+			} else {
+				// Not enough for a hold; emit individual notes for ci[p..endK-1].
+				for k := p; k < endK; k++ {
+					notes = append(notes, note{
+						lane:    lane,
+						lineIdx: ci[k],
+						sha:     lines[ci[k]].sha,
+						msg:     lines[ci[k]].msg,
+						state:   nsUpcoming,
+					})
+				}
+			}
+
+			p = endK // restart from the interrupting commit (or end of run)
 		}
 
-		n := note{
-			lane:      lane,
-			lineIdx:   ci[i],
-			sha:       lines[ci[i]].sha,
-			msg:       lines[ci[i]].msg,
-			state:     nsUpcoming,
-			isHold:    run >= holdMinRun,
-			holdLines: holdLines,
-		}
-		notes = append(notes, n)
-
-		if run >= holdMinRun {
-			i = j // skip intermediate commits; they're part of the hold
-		} else {
-			i++
-		}
+		i = j
 	}
 	return notes
 }
