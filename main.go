@@ -316,8 +316,28 @@ func applyBranchRunes(runes []rune, out []rune) {
 	}
 }
 
+// holdRng is the random source used for probabilistic hold grouping. It is a
+// package-level variable so tests can substitute a deterministic source.
+var holdRng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+// holdRandIntn returns a non-negative random int in [0, n).  Exposed as a
+// variable so tests can replace it with a deterministic implementation.
+var holdRandIntn = func(n int) int { return holdRng.Intn(n) }
+
 // buildNotes scans commit lines and groups consecutive same-lane commits into
-// hold notes when the run is long enough.
+// hold notes with probabilistic length limiting.
+//
+// When a run of same-lane commits reaches holdMinRun, a hold begins. Each
+// additional commit is accepted into the hold with a decreasing probability:
+//
+//	holdMinRun commits → 90 %
+//	holdMinRun+1       → 85 %
+//	holdMinRun+2       → 80 %
+//	…
+//
+// If a probability roll fails (or the probability drops to ≤ 0 %), the hold is
+// finalised and processing resumes from the interrupting commit so a new hold
+// can potentially start there.
 func buildNotes(lines []gLine, holdMinRun int) []note {
 	// Collect indices of commit lines in order.
 	var ci []int
@@ -332,35 +352,64 @@ func buildNotes(lines []gLine, holdMinRun int) []note {
 	for i < len(ci) {
 		lane := lines[ci[i]].lane
 
-		// Count consecutive commits on the same lane.
+		// Find the extent of the consecutive same-lane run.
 		j := i + 1
 		for j < len(ci) && lines[ci[j]].lane == lane {
 			j++
 		}
-		run := j - i
+		// ci[i..j-1] is the full run; process it in segments.
 
-		holdLines := 0
-		if run >= holdMinRun {
-			// Span from first to last commit in the run (inclusive of decorating lines).
-			holdLines = ci[j-1] - ci[i] + 1
+		p := i
+		for p < j {
+			holdSize := 0
+			endK := j          // default: consume the rest of the run
+			interrupted := false
+
+			for k := p; k < j; k++ {
+				holdSize++
+				if holdSize >= holdMinRun {
+					// Probability decreases by 5 % for each commit beyond holdMinRun.
+					prob := 90 - (holdSize-holdMinRun)*5
+					if prob <= 0 || holdRandIntn(100) >= prob {
+						// Interrupted: do not include commit k in this hold.
+						holdSize-- // back out commit k
+						endK = k
+						interrupted = true
+						break
+					}
+				}
+			}
+			_ = interrupted
+
+			if holdSize >= holdMinRun {
+				// Emit a single hold note spanning ci[p..endK-1].
+				holdLineSpan := ci[endK-1] - ci[p] + 1
+				notes = append(notes, note{
+					lane:      lane,
+					lineIdx:   ci[p],
+					sha:       lines[ci[p]].sha,
+					msg:       lines[ci[p]].msg,
+					state:     nsUpcoming,
+					isHold:    true,
+					holdLines: holdLineSpan,
+				})
+			} else {
+				// Not enough for a hold; emit individual notes for ci[p..endK-1].
+				for k := p; k < endK; k++ {
+					notes = append(notes, note{
+						lane:    lane,
+						lineIdx: ci[k],
+						sha:     lines[ci[k]].sha,
+						msg:     lines[ci[k]].msg,
+						state:   nsUpcoming,
+					})
+				}
+			}
+
+			p = endK // restart from the interrupting commit (or end of run)
 		}
 
-		n := note{
-			lane:      lane,
-			lineIdx:   ci[i],
-			sha:       lines[ci[i]].sha,
-			msg:       lines[ci[i]].msg,
-			state:     nsUpcoming,
-			isHold:    run >= holdMinRun,
-			holdLines: holdLines,
-		}
-		notes = append(notes, n)
-
-		if run >= holdMinRun {
-			i = j // skip intermediate commits; they're part of the hold
-		} else {
-			i++
-		}
+		i = j
 	}
 	return notes
 }
